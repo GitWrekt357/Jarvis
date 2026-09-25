@@ -1,5 +1,3 @@
-# Copyright (c) 2026 GitWrekt357
-# Licensed under the GNU Affero General Public License v3.0import os
 import os
 import sys
 import io

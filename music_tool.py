@@ -1,5 +1,4 @@
-# Copyright (c) 2026 GitWrekt357
-# Licensed under the GNU Affero General Public License v3.0import osimport os
+import os
 import sqlite3
 import difflib
 import subprocess
