@@ -1,0 +1,31 @@
+# Audio pipeline
+pyaudio
+scipy
+numpy
+
+# Wake word detection
+openwakeword
+
+# Speech-to-text
+faster-whisper
+onnxruntime          # required for faster-whisper's vad_filter
+
+# Text-to-speech
+piper-tts
+
+# Speaker recognition
+resemblyzer
+
+# Claude API
+anthropic
+
+# Environment/config
+python-dotenv
+
+# Music library indexing (music_tool.py / music_indexer.py)
+mutagen
+
+# Google Calendar (calendar_tool.py + auth_setup.py)
+google-auth
+google-auth-oauthlib
+google-api-python-client
