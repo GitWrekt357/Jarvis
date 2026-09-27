@@ -1,0 +1,9 @@
+# Add these to local.properties (gitignored). Android Studio already put sdk.dir there.
+
+# Home hub (your laptop, via Tailscale). Get the URL from `tailscale serve status`.
+JARVIS_HUB_URL=https://your-laptop.your-tailnet.ts.net
+JARVIS_HUB_TOKEN=same-value-as-FRIDAY_TOKEN-in-desktopjarvis-.env
+
+# Fallback when home is unreachable (Friday calls Claude directly, no files/memory).
+CLAUDE_API_KEY=sk-ant-your-key-here
+CLAUDE_MODEL=claude-sonnet-5

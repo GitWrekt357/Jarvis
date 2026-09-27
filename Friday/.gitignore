@@ -1,0 +1,12 @@
+# Secrets — never commit
+local.properties
+*.env
+# Build output
+.gradle/
+build/
+app/build/
+.idea/
+*.iml
+*.apk
+captures/
+.kotlin/
