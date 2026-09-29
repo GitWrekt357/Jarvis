@@ -1,0 +1,13 @@
+[Unit]
+Description=Jarvis hub (Friday's bridge to the shared brain)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/desktopjarvis
+# Adjust if your venv lives somewhere else:
+ExecStart=%h/desktopjarvis/venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

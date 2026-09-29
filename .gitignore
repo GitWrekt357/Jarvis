@@ -1,6 +1,12 @@
 .env
 *.json
+ClaudeAPI.txt
 venv/
 __pycache__/
 *.pyc
 *.bak
+guests/
+users/
+voices/
+wakeword_models/
+governor

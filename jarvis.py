@@ -2,16 +2,15 @@ import os
 import sys
 import io
 import re
-import json
 import time
 import wave
 import array
 import math
-from datetime import datetime
-from workspace_tool import list_workspace, read_workspace_file, write_workspace_file, workspace_tool_schemas
-from music_tool import shuffle_music, stop_music, music_tool_schema, stop_music_schema
-from project_tool import list_project_directory, read_project_file, copy_to_workspace, project_tool_schemas
-from memory_tool import should_regenerate_summary, regenerate_summary, load_summary_context, load_recent_raw_context, search_conversation_history, search_conversation_history_schema
+
+from brain import (
+    Session, PERSONAS, USERS_DIR, GUESTS_DIR,
+    ensure_dirs, load_json, save_json,
+)
 
 import numpy as np
 from scipy.signal import resample_poly
@@ -22,7 +21,6 @@ from piper import PiperVoice, SynthesisConfig
 from openwakeword.model import Model as WakeWordModel
 from resemblyzer import VoiceEncoder, preprocess_wav
 from dotenv import load_dotenv
-from calendar_tool import get_upcoming_events, calendar_tool_schema
 
 RATE = 16000
 CHANNELS = 1
@@ -69,21 +67,12 @@ PHONETIC_LETTERS = {
     "xray": "x", "ex": "x", "yankee": "y", "why": "y", "zulu": "z", "zee": "z", "zed": "z",
 }
 
-HOUSE_KNOWLEDGE_TRIGGER = "house knowledge"
-GENERAL_KNOWLEDGE_TRIGGER = "general knowledge"
-
-USERS_DIR = os.path.expanduser("~/desktopjarvis/users")
 HOUSEHOLD_VOICEPRINTS_PATH = os.path.join(USERS_DIR, "household_voiceprints.json")
-HOUSEHOLD_FILE = os.path.join(USERS_DIR, "household.md")
-GENERAL_KNOWLEDGE_FILE = os.path.join(USERS_DIR, "general_knowledge.md")
-
-GUESTS_DIR = os.path.expanduser("~/desktopjarvis/guests")
 GUEST_VOICEPRINTS_PATH = os.path.join(GUESTS_DIR, "guest_voiceprints.json")
 GUEST_PURGE_DAYS = 90
 
 HOUSEHOLD_MATCH_THRESHOLD = 0.65
 GUEST_MATCH_THRESHOLD = 0.68
-MAX_CONTEXT_CHARS = 3000
 
 NAME_FILLER_WORDS = {
     "i", "im", "am", "is", "my", "name", "call", "me", "you",
@@ -97,36 +86,6 @@ VOICE_MODEL_PATHS = {
     "friday": os.path.expanduser("~/desktopjarvis/voices/en_GB-alba-medium.onnx"),
 }
 WHISPER_MODEL_SIZE = "small.en"
-
-AVAILABLE_TOOLS = (
-    [calendar_tool_schema]
-    + workspace_tool_schemas
-    + [music_tool_schema, stop_music_schema]
-    + project_tool_schemas
-    + [search_conversation_history_schema]
-)
-
-BASE_SYSTEM_PROMPT = (
-    "You are Jarvis, a refined British butler and desktop voice assistant. "
-    "Speak concisely, clearly, and naturally. Keep responses short and conversational "
-    "since they will be read aloud, not read as text. "
-    "Do not use em dashes, en dashes, or hyphens as punctuation for pauses or asides, "
-    "use commas or periods instead, since dashes do not produce a natural spoken pause "
-    "when converted to speech."
-)
-
-FRIDAY_SYSTEM_PROMPT = (
-    "You are Friday, a distinct assistant persona -- warmer and quicker-witted than "
-    "Jarvis, though currently running on the same underlying system as a placeholder "
-    "for a future, genuinely separate backend. Speak concisely and naturally for "
-    "text-to-speech. Do not use em dashes or en dashes for pauses; use commas or "
-    "periods instead."
-)
-
-PERSONAS = {
-    "jarvis": {"voice": "jarvis", "system_prompt": BASE_SYSTEM_PROMPT},
-    "friday": {"voice": "friday", "system_prompt": FRIDAY_SYSTEM_PROMPT},
-}
 
 FRIDAY_TRIGGER = "switch to friday"
 JARVIS_TRIGGER = "switch to jarvis"
@@ -198,29 +157,6 @@ def add_hotword(word: str):
             f.write(word + "\n")
 
 
-def ensure_dirs():
-    os.makedirs(USERS_DIR, exist_ok=True)
-    os.makedirs(GUESTS_DIR, exist_ok=True)
-    if not os.path.exists(HOUSEHOLD_FILE):
-        with open(HOUSEHOLD_FILE, "w") as f:
-            f.write("# Household Knowledge\n\n")
-    if not os.path.exists(GENERAL_KNOWLEDGE_FILE):
-        with open(GENERAL_KNOWLEDGE_FILE, "w") as f:
-            f.write("# General Knowledge (shared with guests)\n\n")
-
-
-def load_json(path: str) -> dict:
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as f:
-        return json.load(f)
-
-
-def save_json(path: str, data: dict):
-    with open(path, "w") as f:
-        json.dump(data, f)
-
-
 def get_embedding(encoder: VoiceEncoder, audio_bytes: bytes):
     audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     wav = preprocess_wav(audio_np, source_sr=RATE)
@@ -262,56 +198,6 @@ def identify_speaker(encoder: VoiceEncoder, household_voiceprints: dict,
         return best_name, "guest", embedding
 
     return None, None, embedding
-
-
-def trusted_file_path(name: str) -> str:
-    return os.path.join(USERS_DIR, f"{name.lower()}.md")
-
-
-def guest_file_path(name: str) -> str:
-    return os.path.join(GUESTS_DIR, f"guest_{name.lower()}.md")
-
-
-def append_to_file(path: str, text: str):
-    if not text.strip():
-        return
-    if not os.path.exists(path):
-        with open(path, "w") as f:
-            f.write(f"# Notes for {os.path.basename(path).replace('.md', '').title()}\n\n")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    with open(path, "a") as f:
-        f.write(f"- [{timestamp}] {text.strip()}\n")
-
-
-def load_context_for(name: str, tier: str) -> str:
-    parts = []
-
-    if tier == "household":
-        summary_text = load_summary_context(name)
-        if summary_text:
-            parts.append(f"Summary of prior conversations with {name}:\n{summary_text}")
-
-        recent_raw = load_recent_raw_context(name)
-        if recent_raw:
-            parts.append(f"Notes from very recent conversations (since the last summary):\n{recent_raw}")
-
-        for path in (HOUSEHOLD_FILE, GENERAL_KNOWLEDGE_FILE):
-            if os.path.exists(path):
-                with open(path, "r") as f:
-                    file_content = f.read()
-                if len(file_content) > MAX_CONTEXT_CHARS:
-                    file_content = file_content[-MAX_CONTEXT_CHARS:]
-                parts.append(file_content)
-    else:
-        for path in (guest_file_path(name), GENERAL_KNOWLEDGE_FILE):
-            if os.path.exists(path):
-                with open(path, "r") as f:
-                    file_content = f.read()
-                if len(file_content) > MAX_CONTEXT_CHARS:
-                    file_content = file_content[-MAX_CONTEXT_CHARS:]
-                parts.append(file_content)
-
-    return "\n\n".join(parts)
 
 
 def extract_name(text: str) -> str:
@@ -421,101 +307,6 @@ def transcribe(whisper_model: WhisperModel, audio_bytes: bytes) -> str:
         hotwords=" ".join(current_hotwords) if current_hotwords else None,
     )
     return " ".join(segment.text.strip() for segment in segments).strip()
-
-
-def build_persona_system_prompt(persona_key: str, speaker_name: str, tier: str, context_text: str) -> str:
-    prompt = PERSONAS[persona_key]["system_prompt"] + (
-        f"\n\nA voice-recognition pipeline has already identified the current speaker as "
-        f"'{speaker_name}' ({tier} tier), before this conversation reached you. "
-        f"Do not guess, question, or substitute a different name for them."
-    )
-    if context_text.strip():
-        prompt += (
-            f"\n\nHere is background you remember about {speaker_name}:\n"
-            f"{context_text}\n\n"
-            "Use this naturally if it's relevant, but don't recite it verbatim unless asked."
-        )
-    return prompt
-
-
-def ask_claude(client: Anthropic, history: list, user_text: str, system_prompt: str, speaker_name: str, tier: str) -> str:
-    history.append({"role": "user", "content": user_text})
-
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        system=system_prompt,
-        tools=AVAILABLE_TOOLS,
-        messages=history,
-    )
-
-    if response.stop_reason == "tool_use":
-        history.append({"role": "assistant", "content": response.content})
-
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "get_upcoming_events":
-                result = get_upcoming_events(
-                    time_range=block.input.get("time_range", "today"),
-                    max_results=block.input.get("max_results", 10),
-                )
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": str(result),
-                })
-            elif block.type == "tool_use" and block.name == "list_workspace":
-                result = list_workspace(relative_path=block.input.get("relative_path", ""))
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "read_workspace_file":
-                result = read_workspace_file(relative_path=block.input["relative_path"])
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "write_workspace_file":
-                result = write_workspace_file(
-                    relative_path=block.input["relative_path"],
-                    content=block.input["content"],
-                    mode=block.input.get("mode", "overwrite"),
-                )
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "shuffle_music":
-                result = shuffle_music(
-                    query=block.input["query"],
-                    confirmed_name=block.input.get("confirmed_name"),
-                    confirmed_type=block.input.get("confirmed_type"),
-                )
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "stop_music":
-                result = stop_music()
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "list_project_directory":
-                result = list_project_directory(relative_path=block.input.get("relative_path", ""))
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "read_project_file":
-                result = read_project_file(relative_path=block.input["relative_path"])
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "copy_to_workspace":
-                result = copy_to_workspace(relative_path=block.input["relative_path"])
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-            elif block.type == "tool_use" and block.name == "search_conversation_history":
-                if tier == "household":
-                    result = search_conversation_history(speaker_name, block.input["query"])
-                else:
-                    result = "I can only search full conversation history for household members."
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(result)})
-
-        history.append({"role": "user", "content": tool_results})
-
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            system=system_prompt,
-            tools=AVAILABLE_TOOLS,
-            messages=history,
-        )
-
-    reply_text = response.content[0].text
-    history.append({"role": "assistant", "content": reply_text})
-    return reply_text
 
 
 def speak(voice: PiperVoice, p: pyaudio.PyAudio, text: str):
@@ -628,16 +419,10 @@ def main():
                 speak(voices["jarvis"], p, f"Nice to meet you, {speaker_name}. What can I help you with?")
                 first_audio = None
 
-            if tier == "household" and should_regenerate_summary(speaker_name):
-                print(f"Updating memory summary for {speaker_name}...")
-                regenerate_summary(client, speaker_name)
+            # The shared brain handles memory summary, context loading, and the system prompt.
+            session = Session(client, speaker_name, tier, persona="jarvis", device="desktop")
+            active_voice = voices[PERSONAS[session.persona]["voice"]]
 
-            context_text = load_context_for(speaker_name, tier)
-            active_persona = "jarvis"
-            active_voice = voices[PERSONAS[active_persona]["voice"]]
-            session_system_prompt = build_persona_system_prompt(active_persona, speaker_name, tier, context_text)
-
-            history = []
             in_conversation = True
             pending_audio = first_audio
 
@@ -683,18 +468,16 @@ def main():
                     in_conversation = False
                     break
 
-                if FRIDAY_TRIGGER in lower_text and active_persona != "friday":
+                if FRIDAY_TRIGGER in lower_text and session.persona != "friday":
                     speak(active_voice, p, "Right, handing off to Friday now.")
-                    active_persona = "friday"
-                    active_voice = voices[PERSONAS[active_persona]["voice"]]
-                    session_system_prompt = build_persona_system_prompt(active_persona, speaker_name, tier, context_text)
+                    session.set_persona("friday")
+                    active_voice = voices[PERSONAS[session.persona]["voice"]]
                     continue
 
-                if JARVIS_TRIGGER in lower_text and active_persona != "jarvis":
+                if JARVIS_TRIGGER in lower_text and session.persona != "jarvis":
                     speak(active_voice, p, "Switching back to Jarvis.")
-                    active_persona = "jarvis"
-                    active_voice = voices[PERSONAS[active_persona]["voice"]]
-                    session_system_prompt = build_persona_system_prompt(active_persona, speaker_name, tier, context_text)
+                    session.set_persona("jarvis")
+                    active_voice = voices[PERSONAS[session.persona]["voice"]]
                     continue
 
                 if HOTWORD_TRIGGER in lower_text:
@@ -707,31 +490,13 @@ def main():
                         speak(active_voice, p, "I didn't catch a word to add. Try spelling it again.")
                     continue
 
-                if HOUSE_KNOWLEDGE_TRIGGER in lower_text:
-                    cleaned = re.sub(HOUSE_KNOWLEDGE_TRIGGER, "", user_text, flags=re.IGNORECASE).strip(" ,.")
-                    if tier == "household":
-                        append_to_file(HOUSEHOLD_FILE, cleaned)
-                        print(f"Logged to household.md: {cleaned}")
-                    else:
-                        speak(active_voice, p, "I'm not able to add that to the household notes.")
-                        append_to_file(guest_file_path(speaker_name), cleaned)
-                        print(f"Guest attempted household knowledge, logged to guest file instead: {cleaned}")
-                    text_for_claude = cleaned
-
-                elif GENERAL_KNOWLEDGE_TRIGGER in lower_text:
-                    cleaned = re.sub(GENERAL_KNOWLEDGE_TRIGGER, "", user_text, flags=re.IGNORECASE).strip(" ,.")
-                    append_to_file(GENERAL_KNOWLEDGE_FILE, cleaned)
-                    text_for_claude = cleaned
-                    print(f"Logged to general_knowledge.md: {cleaned}")
-
-                else:
-                    target_path = trusted_file_path(speaker_name) if tier == "household" else guest_file_path(speaker_name)
-                    append_to_file(target_path, user_text)
-                    text_for_claude = user_text
+                text_for_claude, notice = session.route(user_text)
+                if notice:
+                    speak(active_voice, p, notice)
 
                 print("Thinking...")
-                reply_text = ask_claude(client, history, text_for_claude, session_system_prompt, speaker_name, tier)
-                print(f"Jarvis: {reply_text}")
+                reply_text = session.ask(text_for_claude)
+                print(f"{session.persona.title()}: {reply_text}")
 
                 speak(active_voice, p, reply_text)
 
