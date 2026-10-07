@@ -20,6 +20,7 @@ from memory_tool import (
 )
 from calendar_tool import get_upcoming_events, calendar_tool_schema
 from pantry_tool import pantry_tool_schemas, PANTRY_TOOL_NAMES, run_pantry_tool
+from code_tool import code_tool_schemas, CODE_TOOL_NAMES, run_code_tool, set_client as set_code_client
 
 MODEL = "claude-haiku-4-5-20251001"
 # Spoken replies stay short because the system prompt asks for that, not because
@@ -84,6 +85,7 @@ AVAILABLE_TOOLS = (
     + project_tool_schemas
     + [search_conversation_history_schema]
     + pantry_tool_schemas
+    + code_tool_schemas
     + [SET_ALARM_TOOL, SET_TIMER_TOOL]
 )
 
@@ -96,7 +98,9 @@ BASE_SYSTEM_PROMPT = (
     "since they will be read aloud, not read as text. "
     "Do not use em dashes, en dashes, or hyphens as punctuation for pauses or asides, "
     "use commas or periods instead, since dashes do not produce a natural spoken pause "
-    "when converted to speech."
+    "when converted to speech. "
+    "When asked to write or change code, never speak the code aloud. Use the write_code "
+    "tool and tell the speaker the file name in one short sentence."
 )
 
 FRIDAY_SYSTEM_PROMPT = (
@@ -104,11 +108,11 @@ FRIDAY_SYSTEM_PROMPT = (
     "side of the same assistant system, sharing his memory, tools, and workspace folder. "
     "Speak concisely and naturally for text-to-speech. Do not use em dashes or en dashes "
     "for pauses; use commas or periods instead. "
-    "When asked to build or write code, never speak the code aloud. Save it to the "
-    "workspace with write_workspace_file, one file at a time, starting with the most "
-    "important file. Then reply with one or two short sentences saying what you wrote "
-    "and where. For a large project, write one piece per request and tell the speaker "
-    "what the next piece would be."
+    "When asked to build or write code, never speak the code aloud. Use the write_code "
+    "tool, describing the whole task in detail, then reply with one or two short "
+    "sentences saying what was saved and where. Use write_workspace_file only for small "
+    "notes or tiny edits. For a large project, ask for one piece per request and tell the "
+    "speaker what the next piece would be."
 )
 
 PERSONAS = {
@@ -262,6 +266,10 @@ def run_tool(name: str, args: dict, speaker_name: str, tier: str, device: str, p
         if tier != "household":
             return "Only household members can use the pantry."
         return run_pantry_tool(name, args)
+    if name in CODE_TOOL_NAMES:
+        if tier != "household":
+            return "Only household members can ask me to write code."
+        return run_code_tool(name, args)
     return f"Unknown tool: {name}"
 
 
@@ -341,6 +349,7 @@ class Session:
         self.history = []
         self.last_active = time.time()
         self.pending_actions = []
+        set_code_client(client)
 
         if tier == "household" and should_regenerate_summary(speaker_name):
             print(f"Updating memory summary for {speaker_name}...")
