@@ -19,6 +19,7 @@ from memory_tool import (
     load_recent_raw_context, search_conversation_history, search_conversation_history_schema,
 )
 from calendar_tool import get_upcoming_events, calendar_tool_schema
+from pantry_tool import pantry_tool_schemas, PANTRY_TOOL_NAMES, run_pantry_tool
 
 MODEL = "claude-haiku-4-5-20251001"
 # Spoken replies stay short because the system prompt asks for that, not because
@@ -82,6 +83,7 @@ AVAILABLE_TOOLS = (
     + [music_tool_schema, stop_music_schema]
     + project_tool_schemas
     + [search_conversation_history_schema]
+    + pantry_tool_schemas
     + [SET_ALARM_TOOL, SET_TIMER_TOOL]
 )
 
@@ -256,6 +258,10 @@ def run_tool(name: str, args: dict, speaker_name: str, tier: str, device: str, p
         if tier == "household":
             return search_conversation_history(speaker_name, args["query"])
         return "I can only search full conversation history for household members."
+    if name in PANTRY_TOOL_NAMES:
+        if tier != "household":
+            return "Only household members can use the pantry."
+        return run_pantry_tool(name, args)
     return f"Unknown tool: {name}"
 
 
