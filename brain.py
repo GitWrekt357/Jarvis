@@ -21,8 +21,21 @@ from memory_tool import (
 from calendar_tool import get_upcoming_events, calendar_tool_schema
 
 MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 300
+# Spoken replies stay short because the system prompt asks for that, not because
+# of this cap. The cap has to be big enough for a whole file inside a tool call.
+MAX_TOKENS = 8192
 MAX_TOOL_ROUNDS = 4
+
+# Spoken when a turn fails. These get read aloud, so no dashes.
+TRUNCATED_REPLY = (
+    "That was too big for me to write in one go, so nothing was saved. "
+    "Try asking for one piece at a time, like just the database part first."
+)
+ROUND_CAP_REPLY = (
+    "I ran out of steps before I finished that. "
+    "Anything I already saved is still in the workspace. Try asking for a smaller piece."
+)
+EMPTY_REPLY = "Sorry, I lost my train of thought there. Could you ask again?"
 
 HOUSE_KNOWLEDGE_TRIGGER = "house knowledge"
 GENERAL_KNOWLEDGE_TRIGGER = "general knowledge"
@@ -85,11 +98,15 @@ BASE_SYSTEM_PROMPT = (
 )
 
 FRIDAY_SYSTEM_PROMPT = (
-    "You are Friday, a distinct assistant persona -- warmer and quicker-witted than "
-    "Jarvis, though currently running on the same underlying system as a placeholder "
-    "for a future, genuinely separate backend. Speak concisely and naturally for "
-    "text-to-speech. Do not use em dashes or en dashes for pauses; use commas or "
-    "periods instead."
+    "You are Friday, a warmer and quicker-witted voice than Jarvis. You are the mobile "
+    "side of the same assistant system, sharing his memory, tools, and workspace folder. "
+    "Speak concisely and naturally for text-to-speech. Do not use em dashes or en dashes "
+    "for pauses; use commas or periods instead. "
+    "When asked to build or write code, never speak the code aloud. Save it to the "
+    "workspace with write_workspace_file, one file at a time, starting with the most "
+    "important file. Then reply with one or two short sentences saying what you wrote "
+    "and where. For a large project, write one piece per request and tell the speaker "
+    "what the next piece would be."
 )
 
 PERSONAS = {
@@ -247,21 +264,47 @@ def ask_claude(client, history: list, user_text: str, system_prompt: str,
                pending_actions: list = None) -> str:
     if pending_actions is None:
         pending_actions = []
+
+    # If this turn fails, everything added since here is discarded, so a failed
+    # attempt can never be saved into history and repeated on the next request.
+    start_len = len(history)
     history.append({"role": "user", "content": user_text})
     tools = tools_for(device)
     response = None
+
     for round_num in range(MAX_TOOL_ROUNDS + 1):
         response = client.messages.create(
             model=MODEL, max_tokens=MAX_TOKENS, system=system_prompt,
             tools=tools, messages=history,
         )
-        if response.stop_reason != "tool_use" or round_num == MAX_TOOL_ROUNDS:
+        out_tokens = getattr(getattr(response, "usage", None), "output_tokens", "?")
+        print(f"[brain] {device} round {round_num}: "
+              f"stop_reason={response.stop_reason}, output_tokens={out_tokens}")
+
+        if response.stop_reason == "max_tokens":
+            has_tool_call = any(b.type == "tool_use" for b in response.content)
+            has_text = any(b.type == "text" and b.text.strip() for b in response.content)
+            if has_tool_call or not has_text:
+                # A tool call cut off mid-argument is unusable, so don't run it.
+                del history[start_len:]
+                print("[brain] cut off at MAX_TOKENS, turn discarded")
+                return TRUNCATED_REPLY
+            break  # plain text that got cut off: still better than nothing
+
+        if response.stop_reason != "tool_use":
             break
+
+        if round_num == MAX_TOOL_ROUNDS:
+            del history[start_len:]
+            print("[brain] hit MAX_TOOL_ROUNDS, turn discarded")
+            return ROUND_CAP_REPLY
+
         history.append({"role": "assistant", "content": response.content})
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            print(f"[brain] tool call: {block.name}")
             try:
                 result = run_tool(block.name, block.input, speaker_name, tier, device, pending_actions)
             except Exception as e:
@@ -271,7 +314,9 @@ def ask_claude(client, history: list, user_text: str, system_prompt: str,
 
     reply_text = "".join(b.text for b in response.content if b.type == "text").strip()
     if not reply_text:
-        reply_text = "Sorry, I lost my train of thought there. Could you ask again?"
+        del history[start_len:]
+        print("[brain] empty reply, turn discarded")
+        return EMPTY_REPLY
     history.append({"role": "assistant", "content": reply_text})
     return reply_text
 
