@@ -45,9 +45,19 @@ phone text-to-speech ← reply + optional phone actions (alarms, timers)
 3. Phone: Settings → About phone → tap Build number 7× → Developer options → USB debugging on.
 4. Plug in, pick the phone in Android Studio's device menu, press Run.
    Or: Build → Build APK(s), then sideload the APK.
-5. First household unlock: tap **Unlock**, paste `FRIDAY_TOKEN` once, then confirm with your
-   fingerprint or PIN. After that, Unlock only asks for the fingerprint/PIN. The phone needs a
-   screen lock set up.
+5. First household unlock: show the household token as a QR code on the hub machine, tap
+   **Unlock** in Friday, tap **Scan QR from hub**, and scan it. Then tap **Save and unlock** and
+   confirm with your fingerprint or PIN. The code is decoded on the phone by Google's on-device scanner, so the token never
+   goes through a clipboard, a file, or a third-party app. After that, Unlock only asks for the
+   fingerprint/PIN. The phone needs a screen lock set up.
+   ```
+   sudo pacman -S qrencode      # once
+   grep '^FRIDAY_TOKEN=' ~/desktopjarvis/.env | cut -d= -f2- | tr -d '\n' | qrencode -t ANSIUTF8
+   clear                        # when done, so the code isn't left on screen
+   ```
+   Don't send the token as a file or open it in Google Docs or a browser: that copies it into
+   someone else's cloud. If it ever leaves your devices, rotate `FRIDAY_TOKEN` in the hub's
+   `.env` and restart the hub.
 
 ## Hub setup
 The hub (`server.py`) runs on the home machine, binds to `127.0.0.1`, and is exposed to

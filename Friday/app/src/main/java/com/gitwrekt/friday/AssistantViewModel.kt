@@ -101,7 +101,12 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
     /** Saves the household token (encrypted). Returns false if it couldn't be stored. */
     fun saveHouseholdToken(token: String): Boolean {
         if (token.isBlank()) {
-            error = "Paste the household token first."
+            error = "Scan or paste the household token first."
+            return false
+        }
+        // The real token is ~22-43 characters. A short entry is almost certainly a PIN or a typo.
+        if (token.trim().length < MIN_TOKEN_LENGTH) {
+            error = "That is too short to be the hub token. Use the long FRIDAY_TOKEN, not your phone PIN."
             return false
         }
         val ok = vault.save(token)
@@ -320,6 +325,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
     companion object {
         private const val MAX_CONTEXT = 30
         private const val RELOCK_AFTER_MS = 5 * 60 * 1000L
+        private const val MIN_TOKEN_LENGTH = 20
         private val END_PHRASES = listOf(
             "goodbye", "that's all", "that is all", "that'll be all", "stop listening",
             "never mind", "nevermind", "we're done", "thanks that's all",

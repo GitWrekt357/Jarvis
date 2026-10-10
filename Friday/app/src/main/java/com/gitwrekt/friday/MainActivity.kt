@@ -77,6 +77,16 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
     }
 
     val activity = remember(context) { context.findFragmentActivity() }
+
+    // Separate scanner for the household-token QR code. Runs in Google's own screen, on-device.
+    val tokenScanner = remember {
+        GmsBarcodeScanning.getClient(
+            context,
+            GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+        )
+    }
     var showTokenDialog by remember { mutableStateOf(false) }
     var tokenInput by remember { mutableStateOf("") }
 
@@ -98,7 +108,12 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
             title = { Text("Household token") },
             text = {
                 Column {
-                    Text("Paste FRIDAY_TOKEN from the hub's .env. It is stored encrypted on this phone, and you will unlock it with your fingerprint or PIN.")
+                    Text("This is the long FRIDAY_TOKEN from the hub, not your phone PIN. Scan its QR code or paste it. It is stored encrypted, and you unlock it with your fingerprint or PIN.")
+                    TextButton(onClick = {
+                        tokenScanner.startScan()
+                            .addOnSuccessListener { code -> tokenInput = code.rawValue.orEmpty().trim() }
+                            .addOnFailureListener { e -> vm.onScanError(e.message) }
+                    }) { Text("Scan QR from hub") }
                     OutlinedTextField(
                         value = tokenInput,
                         onValueChange = { tokenInput = it },
