@@ -55,6 +55,27 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
         }
     }
 
+    /**
+     * Called with the digits the barcode scanner read. Sends them to the brain as a
+     * normal message, so the pantry tool on the hub does the lookup and the adding.
+     * After the spoken reply Friday listens again, so you can say a quantity or expiry date.
+     */
+    fun onBarcodeScanned(code: String?) {
+        val digits = code?.filter { it.isDigit() }.orEmpty()
+        if (digits.isEmpty()) {
+            error = "That code does not look like a product barcode."
+            return
+        }
+        stopEverything()
+        error = null
+        newSession = true
+        sendToBrain("I scanned barcode $digits. Add it to the pantry.")
+    }
+
+    fun onScanError(message: String?) {
+        error = message ?: "Barcode scanning failed."
+    }
+
     fun clearHistory() {
         stopEverything()
         store.clear()
@@ -88,6 +109,24 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
             speaker.speak(Persona.signOff, currentVoice) { status = Status.IDLE }
             return
         }
+        sendToBrain(said)
+    }
+
+    override fun onNothingHeard() {
+        partial = ""
+        if (status == Status.LISTENING) status = Status.IDLE
+    }
+
+    override fun onSpeechError(message: String) {
+        partial = ""
+        error = message
+        status = Status.IDLE
+    }
+
+    // ---- internals ----
+
+    /** Shared by voice and barcode input: show the message, ask the brain, speak the reply. */
+    private fun sendToBrain(said: String) {
         messages.add(ChatMessage("user", said))
         status = Status.THINKING
         requestJob = viewModelScope.launch {
@@ -113,19 +152,6 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
             }
         }
     }
-
-    override fun onNothingHeard() {
-        partial = ""
-        if (status == Status.LISTENING) status = Status.IDLE
-    }
-
-    override fun onSpeechError(message: String) {
-        partial = ""
-        error = message
-        status = Status.IDLE
-    }
-
-    // ---- internals ----
 
     /** Home hub first (full memory + files); direct Claude if home can't be reached. */
     private suspend fun askBrain(text: String): String {

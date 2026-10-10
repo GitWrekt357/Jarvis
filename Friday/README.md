@@ -1,65 +1,62 @@
-# Friday (v0.1): mobile companion to Jarvis
+# Friday (v0.2) — mobile companion to Jarvis
 
 Kotlin + Jetpack Compose voice assistant for Android. Jarvis is the desktop agent; Friday is the mobile one.
+Both share one brain (`brain.py`) running on your home machine.
 
-Pipeline: phone speech-to-text (Android SpeechRecognizer, on-device when available)
-→ home hub (`server.py` on your laptop, the same brain as desktop Jarvis)
-→ phone text-to-speech (Android TextToSpeech).
-
-If the hub can't be reached, Friday falls back to calling the Claude Messages
-API directly (see [Offline mode](#offline-mode)).
+```
+phone speech-to-text → home hub (server.py over Tailscale) → brain.py → Claude API
+                     ↘ (hub unreachable) direct Claude call, "offline mode"
+phone text-to-speech ← reply + optional phone actions (alarms, timers)
+```
 
 ## Features
-- Tap to talk, then open conversation: after each reply it listens again until you
+- **Tap to talk, then open conversation:** after each reply Friday listens again until you
   go quiet or say a sign-off ("that's all", "goodbye", "never mind"…).
-- Tap while it's speaking to interrupt and talk.
-- Persistent chat history (survives restarts).
-- Voice picker (tap the Voice line to cycle and hear a sample).
-- Phone actions from the hub, such as setting alarms and timers.
+- **Barge-in:** tap while she is speaking to interrupt and talk.
+- **Barcode scanning:** tap **Scan** at the top, point the camera at a product's UPC/EAN
+  barcode, and Friday sends the code to the hub as "I scanned barcode … Add it to the
+  pantry." The pantry tool on the hub looks the product up and adds it. Afterwards she
+  listens, so you can say a quantity or expiry date.
+  - Uses Google's code scanner (ML Kit, via Play Services), which runs in its own screen,
+    so **Friday needs no camera permission**.
+  - Reads EAN-13, EAN-8, UPC-A and UPC-E only (product barcodes; QR codes are ignored).
+  - Needs a pantry tool registered in the hub's `brain.py`. Without one, Friday will
+    receive the scan but have nothing to do with it.
+- **Alarms and timers:** "wake me at 6:30", "timer for ten minutes". The hub queues the
+  action and the phone sets it through the system Clock app.
+- **Persistent chat history** (survives restarts) and a **voice picker** (tap the Voice line
+  to cycle and hear a sample).
 
 ## Setup
-1. Open this folder in Android Studio (it will generate the Gradle wrapper and `local.properties`).
-2. Add to `local.properties` (see `local.properties.example`). Android Studio
-   already puts `sdk.dir` there; leave it alone.
+1. Open this folder in Android Studio (it generates the Gradle wrapper and `local.properties`),
+   then **Sync Project**.
+2. Copy the entries from `local.properties.example` into `local.properties`:
    ```
-   # Home hub (your laptop, via Tailscale). Get the URL from `tailscale serve status`.
    JARVIS_HUB_URL=https://your-laptop.your-tailnet.ts.net
-   JARVIS_HUB_TOKEN=same-value-as-FRIDAY_TOKEN-in-the-desktop-.env
-
-   # Optional fallback when home is unreachable (calls Claude directly, no files or memory).
-   CLAUDE_API_KEY=sk-ant-...
-   CLAUDE_MODEL=claude-haiku-4-5-20251001
+   JARVIS_HUB_TOKEN=same-value-as-FRIDAY_TOKEN-in-the-hub-.env
+   CLAUDE_API_KEY=sk-ant-...        # fallback only, used when home is unreachable
+   CLAUDE_MODEL=claude-sonnet-5
    ```
-   You need at least one of the two: the hub settings or a Claude API key.
 3. Phone: Settings → About phone → tap Build number 7× → Developer options → USB debugging on.
 4. Plug in, pick the phone in Android Studio's device menu, press Run.
-   Or: Build → Build App Bundle(s)/APK(s) → Build APK(s), then sideload the APK.
+   Or: Build → Build APK(s), then sideload the APK.
 
-These values are read from `local.properties` at build time, so change them
-and rebuild the app to apply a new hub URL, token, key, or model.
+The hub (`server.py`) runs on the home machine, binds to `127.0.0.1`, and is exposed to
+your own devices with `tailscale serve`. Every request needs the bearer token.
 
 ## Home hub (shared brain)
-When `JARVIS_HUB_URL` and `JARVIS_HUB_TOKEN` are set, Friday sends what you say to
-`server.py` on the laptop, which runs the same brain as desktop Jarvis (memory,
-`household.md`, calendar, project/workspace files). The hub URL is normally a
-Tailscale address, so it is only reachable from devices on your tailnet. See
-`HUB_SETUP.md` in the Jarvis repo root for setting up the hub itself.
+When `JARVIS_HUB_URL` and `JARVIS_HUB_TOKEN` are set, Friday sends what you say to the hub,
+which runs the same brain as desktop Jarvis (memory, household notes, calendar, workspace
+files, pantry). The hub replies with `{reply, actions}`. Actions are phone-side jobs
+(currently `set_alarm` and `set_timer`) that `PhoneActions.kt` runs with Android intents.
+If the hub can't be reached within a few seconds, Friday calls Claude directly and shows
+"offline mode" (no files, memory or pantry).
 
-## Offline mode
-If the laptop can't be reached and `CLAUDE_API_KEY` is set, Friday falls back
-to calling Claude directly and shows "offline mode". In this mode she has
-no access to your files, notes, or memory. If you leave `CLAUDE_API_KEY`
-blank, there is no fallback and Friday will report that she can't reach home.
-
-## Security note
-Anything in `local.properties` is compiled into the APK, and anyone holding
-the APK can extract it, so don't share your build.
-
-- **`JARVIS_HUB_TOKEN`** is only useful to someone who can also reach your
-  hub, which over Tailscale means a device on your tailnet.
-- **`CLAUDE_API_KEY`** is the riskier one: it is a real API key. To keep it
-  off the phone entirely, leave it blank and accept that there is no
-  offline fallback.
+## Security notes
+- `local.properties` holds your hub token and API key. It is gitignored; never commit it.
+- The API key and hub token are compiled into the APK, so anyone holding the APK can
+  extract them. Fine for your own phone; don't share the APK.
+- The hub is reachable only over your tailnet and still requires the token.
 
 ## License
-AGPL-3.0, same as Jarvis. Copy the LICENSE file from the Jarvis repo into this folder.
+GPL-3.0. See [LICENSE](LICENSE).

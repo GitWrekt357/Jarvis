@@ -26,6 +26,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,6 +59,22 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
         if (granted) vm.onMicTapped()
     }
 
+    // Google's code scanner runs in its own screen, so Friday needs no camera permission.
+    // Product barcodes only (UPC and EAN), which keeps scans fast and ignores QR codes.
+    val scanner = remember {
+        GmsBarcodeScanning.getClient(
+            context,
+            GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(
+                    Barcode.FORMAT_EAN_13,
+                    Barcode.FORMAT_EAN_8,
+                    Barcode.FORMAT_UPC_A,
+                    Barcode.FORMAT_UPC_E,
+                )
+                .build()
+        )
+    }
+
     val accent = Color(0xFFFF8A80)
     val listState = rememberLazyListState()
     LaunchedEffect(vm.messages.size) {
@@ -75,6 +94,14 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
                 Text("  offline mode", color = Color.Gray, fontSize = 14.sp)
             }
             Spacer(Modifier.weight(1f))
+            TextButton(
+                enabled = vm.status != Status.THINKING,
+                onClick = {
+                    scanner.startScan()
+                        .addOnSuccessListener { barcode -> vm.onBarcodeScanned(barcode.rawValue) }
+                        .addOnFailureListener { e -> vm.onScanError(e.message) }
+                },
+            ) { Text("Scan") }
             TextButton(onClick = vm::clearHistory) { Text("Clear") }
         }
 
@@ -89,7 +116,7 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
 
         if (vm.partial.isNotBlank()) {
             Text(
-                "\u201C${vm.partial}\u201D",
+                "“${vm.partial}”",
                 color = Color.LightGray,
                 fontStyle = FontStyle.Italic,
                 modifier = Modifier.padding(bottom = 8.dp),
@@ -102,9 +129,9 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
         val name = Persona.displayName
         val label = when (vm.status) {
             Status.IDLE -> "Talk to $name"
-            Status.LISTENING -> "Listening\u2026  (tap to cancel)"
-            Status.THINKING -> "Thinking\u2026  (tap to cancel)"
-            Status.SPEAKING -> "Speaking\u2026  (tap to interrupt)"
+            Status.LISTENING -> "Listening…  (tap to cancel)"
+            Status.THINKING -> "Thinking…  (tap to cancel)"
+            Status.SPEAKING -> "Speaking…  (tap to interrupt)"
         }
         Button(
             onClick = {
@@ -117,7 +144,7 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
 
         TextButton(onClick = vm::cycleVoice, modifier = Modifier.fillMaxWidth()) {
             Text(
-                "Voice: ${vm.voiceLabel}  \u25B8",
+                "Voice: ${vm.voiceLabel}  ▸",
                 color = Color.Gray,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

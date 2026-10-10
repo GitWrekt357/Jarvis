@@ -6,4 +6,4 @@ JARVIS_HUB_TOKEN=same-value-as-FRIDAY_TOKEN-in-desktopjarvis-.env
 
 # Fallback when home is unreachable (Friday calls Claude directly, no files/memory).
 CLAUDE_API_KEY=sk-ant-your-key-here
-CLAUDE_MODEL=claude-haiku-4-5-20251001
+CLAUDE_MODEL=claude-sonnet-5
