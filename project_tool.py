@@ -13,6 +13,11 @@ BLOCKED_FILENAMES = {
 
 SKIP_DIR_NAMES = {"venv", "__pycache__", ".git"}
 
+# Per-person notes and conversation logs. Blocked for everyone, so household
+# members cannot read each other's notes through this tool either. (Jarvis still
+# loads a person's own notes through the memory code, not through this tool.)
+BLOCKED_TOP_LEVEL_DIRS = {"users", "guests"}
+
 WORKSPACE_DIR = os.path.join(BASE_DIR, "workspace")
 
 MAX_READ_CHARS = 8000
@@ -28,6 +33,8 @@ def resolve_project_path(relative_path: str) -> str:
         raise ValueError(f"'{relative_path}' is inside an excluded directory.")
     if os.path.basename(candidate) in BLOCKED_FILENAMES:
         raise ValueError(f"'{os.path.basename(candidate)}' is not accessible through this tool.")
+    if parts and parts[0] in BLOCKED_TOP_LEVEL_DIRS:
+        raise ValueError(f"'{parts[0]}' holds private notes and is not accessible through this tool.")
 
     return candidate
 
@@ -41,9 +48,12 @@ def list_project_directory(relative_path: str = "") -> str:
     if not os.path.isdir(safe_path):
         return f"Error: '{relative_path}' is not a directory."
 
+    at_top_level = safe_path == BASE_DIR
     entries = []
     for name in sorted(os.listdir(safe_path)):
         if name in SKIP_DIR_NAMES or name in BLOCKED_FILENAMES:
+            continue
+        if at_top_level and name in BLOCKED_TOP_LEVEL_DIRS:
             continue
         full = os.path.join(safe_path, name)
         kind = "dir" if os.path.isdir(full) else "file"
@@ -91,7 +101,7 @@ project_tool_schemas = [
         "description": (
             "List files and folders in Jarvis's actual live project directory (not the "
             "workspace sandbox). Use an empty path for the top level, or a subpath. "
-            "Secrets and voice trust data are hidden from listings entirely."
+            "Secrets, voice trust data and personal notes are hidden from listings entirely."
         ),
         "input_schema": {
             "type": "object",
@@ -107,8 +117,8 @@ project_tool_schemas = [
         "name": "read_project_file",
         "description": (
             "Read a file from Jarvis's actual live, current source code or project files "
-            "(e.g. 'jarvis.py', 'music_tool.py', 'users/household.md'). Read-only -- cannot "
-            "modify anything here, and cannot read secrets or voice trust data."
+            "(e.g. 'jarvis.py', 'music_tool.py'). Read-only -- cannot modify anything here, "
+            "and cannot read secrets, voice trust data, or anyone's personal notes."
         ),
         "input_schema": {
             "type": "object",

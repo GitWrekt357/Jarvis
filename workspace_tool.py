@@ -145,6 +145,15 @@ workspace_tool_schemas = [
                     "enum": ["overwrite", "append"],
                     "description": "Overwrite the whole file or append to it. Default overwrite.",
                 },
+                "backup_choice": {
+                    "type": "string",
+                    "enum": ["overwrite", "secondary"],
+                    "description": (
+                        "Leave unset on the first attempt. Only set this after a tool result asked for "
+                        "confirmation about an existing backup and the user has answered: 'overwrite' "
+                        "replaces the existing backup, 'secondary' keeps it and makes a timestamped one."
+                    ),
+                },
             },
             "required": ["relative_path", "content"],
         },

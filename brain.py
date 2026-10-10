@@ -92,6 +92,13 @@ AVAILABLE_TOOLS = (
 # Music plays on the laptop's speakers, so it makes no sense from the phone.
 DESKTOP_ONLY_TOOLS = {"shuffle_music", "stop_music"}
 
+# Anyone who is not a household member (guests, or a phone that has not been
+# unlocked) is offered ONLY these tools. Everything else, including any tool
+# added in the future, is household-only until it is listed here on purpose.
+# Calendar, workspace, project files, history search, pantry and code are all
+# deliberately absent. To make guests conversation-only, empty this set.
+GUEST_ALLOWED_TOOLS = {"shuffle_music", "stop_music", "set_alarm", "set_timer"}
+
 BASE_SYSTEM_PROMPT = (
     "You are Jarvis, a refined British butler and desktop voice assistant. "
     "Speak concisely, clearly, and naturally. Keep responses short and conversational "
@@ -215,13 +222,23 @@ def build_persona_system_prompt(persona_key: str, speaker_name: str, tier: str, 
 
 # ---------- tools ----------
 
-def tools_for(device: str) -> list:
+def tool_allowed_for_tier(name: str, tier: str) -> bool:
+    return tier == "household" or name in GUEST_ALLOWED_TOOLS
+
+
+def tools_for(device: str, tier: str = "household") -> list:
     if device == "desktop":
-        return [t for t in AVAILABLE_TOOLS if t.get("name") not in PHONE_ONLY_TOOLS]
-    return [t for t in AVAILABLE_TOOLS if t.get("name") not in DESKTOP_ONLY_TOOLS]
+        tools = [t for t in AVAILABLE_TOOLS if t.get("name") not in PHONE_ONLY_TOOLS]
+    else:
+        tools = [t for t in AVAILABLE_TOOLS if t.get("name") not in DESKTOP_ONLY_TOOLS]
+    return [t for t in tools if tool_allowed_for_tier(t.get("name"), tier)]
 
 
 def run_tool(name: str, args: dict, speaker_name: str, tier: str, device: str, pending_actions: list):
+    # Second lock behind tools_for(): even if a tool call somehow arrives that
+    # was never offered, a non-household speaker cannot run it.
+    if not tool_allowed_for_tier(name, tier):
+        return "That isn't available to guests."
     if name in DESKTOP_ONLY_TOOLS and device != "desktop":
         return "That tool only works from the desktop."
     if name in PHONE_ONLY_TOOLS:
@@ -243,6 +260,7 @@ def run_tool(name: str, args: dict, speaker_name: str, tier: str, device: str, p
             relative_path=args["relative_path"],
             content=args["content"],
             mode=args.get("mode", "overwrite"),
+            backup_choice=args.get("backup_choice"),
         )
     if name == "shuffle_music":
         return shuffle_music(
@@ -273,6 +291,10 @@ def run_tool(name: str, args: dict, speaker_name: str, tier: str, device: str, p
     return f"Unknown tool: {name}"
 
 
+def now_line() -> str:
+    return f"The current date and time is {datetime.now().strftime('%A, %B %d, %Y, %I:%M %p')}."
+
+
 def ask_claude(client, history: list, user_text: str, system_prompt: str,
                speaker_name: str, tier: str, device: str = "desktop",
                pending_actions: list = None) -> str:
@@ -283,14 +305,19 @@ def ask_claude(client, history: list, user_text: str, system_prompt: str,
     # attempt can never be saved into history and repeated on the next request.
     start_len = len(history)
     history.append({"role": "user", "content": user_text})
-    tools = tools_for(device)
+    tools = tools_for(device, tier)
     response = None
 
     for round_num in range(MAX_TOOL_ROUNDS + 1):
-        response = client.messages.create(
-            model=MODEL, max_tokens=MAX_TOKENS, system=system_prompt,
-            tools=tools, messages=history,
+        # Fresh clock on every call, so a long session never goes stale.
+        request = dict(
+            model=MODEL, max_tokens=MAX_TOKENS,
+            system=f"{system_prompt}\n\n{now_line()}",
+            messages=history,
         )
+        if tools:
+            request["tools"] = tools
+        response = client.messages.create(**request)
         out_tokens = getattr(getattr(response, "usage", None), "output_tokens", "?")
         print(f"[brain] {device} round {round_num}: "
               f"stop_reason={response.stop_reason}, output_tokens={out_tokens}")
@@ -363,11 +390,6 @@ class Session:
         self.system_prompt = build_persona_system_prompt(
             persona, self.speaker_name, self.tier, self.context_text
         ) + DEVICE_NOTES.get(self.device, "")
-        if self.device == "phone":
-            self.system_prompt += (
-                f"\n\nThe current date and time is "
-                f"{datetime.now().strftime('%A, %B %d, %Y, %I:%M %p')}."
-            )
 
     def route(self, user_text: str):
         """Apply knowledge triggers and logging.
