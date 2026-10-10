@@ -25,7 +25,9 @@ android {
 
         buildConfigField("String", "CLAUDE_API_KEY", "\"${localProps.getProperty("CLAUDE_API_KEY", "")}\"")
         buildConfigField("String", "JARVIS_HUB_URL", "\"${localProps.getProperty("JARVIS_HUB_URL", "")}\"")
-        buildConfigField("String", "JARVIS_HUB_TOKEN", "\"${localProps.getProperty("JARVIS_HUB_TOKEN", "")}\"")
+        // Guest-tier token only. The household token is never built in: it is pasted on the phone
+        // once and kept in the Android Keystore (see TokenVault).
+        buildConfigField("String", "JARVIS_GUEST_TOKEN", "\"${localProps.getProperty("JARVIS_GUEST_TOKEN", "")}\"")
         buildConfigField("String", "CLAUDE_MODEL", "\"${localProps.getProperty("CLAUDE_MODEL", "claude-sonnet-5")}\"")
     }
 
@@ -62,5 +64,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Barcode scanning through Google Play Services (no camera permission needed).
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Fingerprint/PIN prompt (needs a FragmentActivity) and Keystore-backed encrypted storage.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

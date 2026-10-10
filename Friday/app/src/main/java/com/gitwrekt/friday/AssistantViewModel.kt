@@ -1,6 +1,7 @@
 package com.gitwrekt.friday
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -18,8 +19,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
 
     private val store = ConversationStore(app)
     private val client = ClaudeClient(BuildConfig.CLAUDE_API_KEY, BuildConfig.CLAUDE_MODEL)
-    private val hub = HubClient(BuildConfig.JARVIS_HUB_URL, BuildConfig.JARVIS_HUB_TOKEN)
+    private val hub = HubClient(BuildConfig.JARVIS_HUB_URL)
+    private val vault = TokenVault(app)
     private var newSession = true
+
+    // The household token exists in memory only while unlocked. It is never in the APK.
+    private var householdToken: String? = null
+    private var backgroundedAt = 0L
 
     val messages = mutableStateListOf<ChatMessage>()
     var status by mutableStateOf(Status.IDLE); private set
@@ -28,6 +34,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
     var voiceLabel by mutableStateOf("loading…"); private set
     /** True when the last reply came from the direct-Claude fallback (no files/memory). */
     var offline by mutableStateOf(false); private set
+    /** Guest by default. Household only after the biometric/PIN prompt succeeds. */
+    var tier by mutableStateOf(Tier.GUEST); private set
+
+    val hasHouseholdToken: Boolean get() = vault.has()
 
     private var currentVoice: String? = null
     private var requestJob: Job? = null
@@ -36,7 +46,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
     private val speaker = Speaker(app) { refreshVoice() }
 
     init {
-        messages.addAll(store.load())
+        messages.addAll(store.load(Tier.GUEST))
     }
 
     // ---- UI actions ----
@@ -61,6 +71,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
      * After the spoken reply Friday listens again, so you can say a quantity or expiry date.
      */
     fun onBarcodeScanned(code: String?) {
+        if (tier != Tier.HOUSEHOLD) {
+            error = "Unlock household mode to add things to the pantry."
+            return
+        }
         val digits = code?.filter { it.isDigit() }.orEmpty()
         if (digits.isEmpty()) {
             error = "That code does not look like a product barcode."
@@ -78,8 +92,78 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
 
     fun clearHistory() {
         stopEverything()
-        store.clear()
+        store.clear(tier)
         messages.clear()
+    }
+
+    // ---- Household unlock ----
+
+    /** Saves the household token (encrypted). Returns false if it couldn't be stored. */
+    fun saveHouseholdToken(token: String): Boolean {
+        if (token.isBlank()) {
+            error = "Paste the household token first."
+            return false
+        }
+        val ok = vault.save(token)
+        if (!ok) error = "Secure storage isn't available on this phone, so household mode can't be used."
+        return ok
+    }
+
+    /** Call only after BiometricGate succeeds. */
+    fun unlockHousehold() {
+        val token = vault.read()
+        if (token == null) {
+            error = "No household token is saved on this phone."
+            return
+        }
+        stopEverything()
+        store.save(Tier.GUEST, messages)
+        householdToken = token
+        switchTier(Tier.HOUSEHOLD)
+    }
+
+    fun lockHousehold() {
+        if (tier != Tier.HOUSEHOLD) return
+        stopEverything()
+        store.save(Tier.HOUSEHOLD, messages)
+        householdToken = null
+        switchTier(Tier.GUEST)
+    }
+
+    fun onUnlockError(message: String) { error = message }
+
+    /** Household mode locks itself after the app has been in the background a while. */
+    fun onBackgrounded() { backgroundedAt = SystemClock.elapsedRealtime() }
+
+    fun onForegrounded() {
+        if (tier == Tier.HOUSEHOLD && backgroundedAt != 0L &&
+            SystemClock.elapsedRealtime() - backgroundedAt > RELOCK_AFTER_MS
+        ) lockHousehold()
+    }
+
+    private fun switchTier(next: Tier) {
+        tier = next
+        newSession = true   // fresh conversation; the hub also keeps one session per tier
+        offline = false
+        error = null
+        messages.clear()
+        messages.addAll(store.load(next))
+    }
+
+    private fun currentToken(): String? =
+        if (tier == Tier.HOUSEHOLD) householdToken
+        else BuildConfig.JARVIS_GUEST_TOKEN.takeIf { it.isNotBlank() }
+
+    private fun hubReady(): Boolean = hub.hasUrl && currentToken() != null
+
+    private fun onHubRejectedToken() {
+        if (tier == Tier.HOUSEHOLD) {
+            vault.clear()
+            lockHousehold()
+            error = "The hub rejected the household token. Unlock again and paste the current one."
+        } else {
+            error = "The hub rejected the guest token. Check JARVIS_GUEST_TOKEN against FRIDAY_GUEST_TOKEN."
+        }
     }
 
     fun cycleVoice() {
@@ -134,7 +218,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
                 val wasOffline = offline
                 val reply = askBrain(said)
                 messages.add(ChatMessage("assistant", reply))
-                store.save(messages)
+                store.save(tier, messages)
                 status = Status.SPEAKING
                 val spoken = if (offline && !wasOffline) {
                     "I can't reach home, so I'm working without your files for now. $reply"
@@ -145,6 +229,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
                 }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: HubAuthException) {
+                dropPendingUserMessage()
+                status = Status.IDLE
+                onHubRejectedToken()
             } catch (e: Exception) {
                 dropPendingUserMessage()
                 error = e.message ?: "Request failed"
@@ -155,9 +243,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
 
     /** Home hub first (full memory + files); direct Claude if home can't be reached. */
     private suspend fun askBrain(text: String): String {
-        if (hub.configured) {
+        val token = currentToken()
+        if (hub.hasUrl && token != null) {
             try {
-                val result = hub.chat(text, newSession)
+                val result = hub.chat(token, text, newSession)
                 newSession = false
                 offline = false
                 if (result.actions.isNotEmpty()) {
@@ -175,8 +264,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
     }
 
     private fun startListening() {
-        if (!hub.configured && !client.hasKey) {
-            error = "Nothing to talk to. Set JARVIS_HUB_URL/TOKEN or CLAUDE_API_KEY in local.properties and rebuild."
+        if (!hubReady() && !client.hasKey) {
+            error = "Nothing to talk to. Set JARVIS_HUB_URL and JARVIS_GUEST_TOKEN (or CLAUDE_API_KEY) in local.properties and rebuild."
             return
         }
         if (!speech.available) {
@@ -230,6 +319,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app), SpeechInput.
 
     companion object {
         private const val MAX_CONTEXT = 30
+        private const val RELOCK_AFTER_MS = 5 * 60 * 1000L
         private val END_PHRASES = listOf(
             "goodbye", "that's all", "that is all", "that'll be all", "stop listening",
             "never mind", "nevermind", "we're done", "thanks that's all",

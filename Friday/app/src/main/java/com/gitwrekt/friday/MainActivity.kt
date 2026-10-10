@@ -1,13 +1,15 @@
 package com.gitwrekt.friday
 
 import android.Manifest
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,23 +23,38 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
-class MainActivity : ComponentActivity() {
+// FragmentActivity (not plain ComponentActivity) because BiometricPrompt needs one.
+class MainActivity : FragmentActivity() {
+    private val vm: AssistantViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { FridayScreen() }
+            MaterialTheme(colorScheme = darkColorScheme()) { FridayScreen(vm) }
         }
     }
+
+    // Household mode relocks itself if the app sits in the background for a few minutes.
+    override fun onStop() { super.onStop(); vm.onBackgrounded() }
+    override fun onStart() { super.onStart(); vm.onForegrounded() }
+}
+
+private tailrec fun Context.findFragmentActivity(): FragmentActivity? = when (this) {
+    is FragmentActivity -> this
+    is ContextWrapper -> baseContext.findFragmentActivity()
+    else -> null
 }
 
 private val Background = Color(0xFF0E1116)
@@ -57,6 +74,52 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
     ) { granted ->
         hasMic = granted
         if (granted) vm.onMicTapped()
+    }
+
+    val activity = remember(context) { context.findFragmentActivity() }
+    var showTokenDialog by remember { mutableStateOf(false) }
+    var tokenInput by remember { mutableStateOf("") }
+
+    // Fingerprint (PIN fallback) releases the household token. Guest needs nothing.
+    fun requestUnlock() {
+        if (activity == null) return
+        if (!vm.hasHouseholdToken) { showTokenDialog = true; return }
+        BiometricGate.authenticate(
+            activity,
+            title = "Unlock household mode",
+            onSuccess = { vm.unlockHousehold() },
+            onError = { vm.onUnlockError(it) },
+        )
+    }
+
+    if (showTokenDialog) {
+        AlertDialog(
+            onDismissRequest = { showTokenDialog = false; tokenInput = "" },
+            title = { Text("Household token") },
+            text = {
+                Column {
+                    Text("Paste FRIDAY_TOKEN from the hub's .env. It is stored encrypted on this phone, and you will unlock it with your fingerprint or PIN.")
+                    OutlinedTextField(
+                        value = tokenInput,
+                        onValueChange = { tokenInput = it },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val saved = vm.saveHouseholdToken(tokenInput)
+                    tokenInput = ""
+                    showTokenDialog = false
+                    if (saved) requestUnlock()
+                }) { Text("Save and unlock") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTokenDialog = false; tokenInput = "" }) { Text("Cancel") }
+            },
+        )
     }
 
     // Google's code scanner runs in its own screen, so Friday needs no camera permission.
@@ -89,19 +152,30 @@ fun FridayScreen(vm: AssistantViewModel = viewModel()) {
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(Persona.displayName, color = accent, fontSize = 22.sp)
-            if (vm.offline) {
-                Text("  offline mode", color = Color.Gray, fontSize = 14.sp)
+            Column {
+                Text(Persona.displayName, color = accent, fontSize = 22.sp)
+                val tierLabel = if (vm.tier == Tier.HOUSEHOLD) "household" else "guest"
+                Text(
+                    tierLabel + if (vm.offline) " · offline mode" else "",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                )
             }
             Spacer(Modifier.weight(1f))
-            TextButton(
-                enabled = vm.status != Status.THINKING,
-                onClick = {
-                    scanner.startScan()
-                        .addOnSuccessListener { barcode -> vm.onBarcodeScanned(barcode.rawValue) }
-                        .addOnFailureListener { e -> vm.onScanError(e.message) }
-                },
-            ) { Text("Scan") }
+            if (vm.tier == Tier.HOUSEHOLD) {
+                // Pantry adds are household-only, so Scan only exists while unlocked.
+                TextButton(
+                    enabled = vm.status != Status.THINKING,
+                    onClick = {
+                        scanner.startScan()
+                            .addOnSuccessListener { barcode -> vm.onBarcodeScanned(barcode.rawValue) }
+                            .addOnFailureListener { e -> vm.onScanError(e.message) }
+                    },
+                ) { Text("Scan") }
+                TextButton(onClick = vm::lockHousehold) { Text("Lock") }
+            } else {
+                TextButton(onClick = { requestUnlock() }) { Text("Unlock") }
+            }
             TextButton(onClick = vm::clearHistory) { Text("Clear") }
         }
 

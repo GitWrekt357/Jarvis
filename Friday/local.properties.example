@@ -2,7 +2,10 @@
 
 # Home hub (your laptop, via Tailscale). Get the URL from `tailscale serve status`.
 JARVIS_HUB_URL=https://your-laptop.your-tailnet.ts.net
-JARVIS_HUB_TOKEN=same-value-as-FRIDAY_TOKEN-in-desktopjarvis-.env
+
+# GUEST token: same value as FRIDAY_GUEST_TOKEN in the hub's .env. This one is built into the APK.
+# Do NOT put the household token (FRIDAY_TOKEN) here. Paste that on the phone when you tap Unlock.
+JARVIS_GUEST_TOKEN=same-value-as-FRIDAY_GUEST_TOKEN-in-the-hub-.env
 
 # Fallback when home is unreachable (Friday calls Claude directly, no files/memory).
 CLAUDE_API_KEY=sk-ant-your-key-here
